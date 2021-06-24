@@ -1,46 +1,99 @@
-import requests
+from pathlib import Path
 from bs4 import BeautifulSoup
-from shutil import copyfileobj
-from os import mkdir
+from concurrent.futures import ThreadPoolExecutor
+
+import requests
+import shutil
+import os
+import argparse
 
 
-def getAllCapitulos():
-    capitulos_req = requests.get('https://mangayabu.top/manga/one-punch-man/')
-    capitulos_soup = BeautifulSoup(capitulos_req.text, 'html.parser')
-    capitulos_divs = capitulos_soup.findAll('div', class_='single-chapter')
-    capitulos_urls = []
-    for div in capitulos_divs:
-        capitulos_urls.append(div.a['href'])
-    capitulos_urls.reverse()
-    return [capitulos_urls[0], capitulos_urls[1], capitulos_urls[3]]
+class Manga:
+    def __init__(self, url):
+        self.url = url
+        self.addRequest()
+        self.addSoup()
+        self.setNome()
+        self.addCapitulos()
 
-def getAllImagesLinks(capitulos_urls):
-    capitulo_images = []
-    for capitulo_url in capitulos_urls:
-        capitulo_req = requests.get(capitulo_url)
-        capitulo_soup = BeautifulSoup(capitulo_req.text, 'html.parser')
-        images_div = capitulo_soup.findAll('div', class_='image-navigator')
-        images_urls = []
-        for image in images_div[0].find_all('img'):
-            images_urls.append(image.attrs['src'])
-        capitulo_images.append(images_urls)
-    return capitulo_images
+    def addRequest(self):
+        self.request = requests.get(self.url)
 
-def downloadImages(path, images_urls):
-    pg = 0
-    for image_url in images_urls:
-        with requests.get(image_url, stream=True) as req:
-            with open(path + str(pg) + '.jpg', 'wb') as file:
-                req.raw.decode_content = True
-                copyfileobj(req.raw, file)
-                pg += 1
+    def addSoup(self):
+        self.soup = BeautifulSoup(self.request.text, 'html.parser')
+
+    def addCapitulos(self):
+        capitulos_divs = self.soup.findAll('div', class_='single-chapter')
+        capitulos_divs.reverse()
+        self.capitulos = []
+        for div in capitulos_divs:
+            capitulo = Capitulo(div.a.text, div.a['href'])
+            self.capitulos.append(capitulo)
+
+    def setNome(self):
+        self.nome = self.soup.h1.text
+    
+    def getNome(self):
+        return self.nome
+
+    def getCapitulos(self):
+        return self.capitulos
+
+class Capitulo:
+    def __init__(self, nome, url):
+        self.nome = nome
+        self.url = url
+        self.addRequest()
+        self.addSoup()
+        self.show()
+
+    def addRequest(self):
+        self.request = requests.get(self.url)
+
+    def addSoup(self):
+        self.soup = BeautifulSoup(self.request.text, 'html.parser')
+    
+    def addImagensUrls(self):
+        images_div = self.soup.find('div', class_='image-navigator')
+        self.images_urls = []
+        for image in images_div.find_all('img'):
+            self.images_urls.append(image.attrs['src'])
+
+    def getImagensUrls(self):
+        return self.images_urls
+
+    def getNome(self):
+        return self.nome
+
+    def show(self):
+        print("Adicionado: {capitulo}".format(capitulo=self.nome))
+    
+
+def downloadImagem(path, url):
+    with requests.get(url, stream=True) as req:
+        filename = path / url.rsplit('/', 1)[1]
+        with open(filename, 'wb') as file:
+            req.raw.decode_content = True
+            shutil.copyfileobj(req.raw, file)
 
 
-capitulos = getAllCapitulos()
-images_links = getAllImagesLinks(capitulos)
-cap = 0
-for link in images_links:
-    path = 'capitulo-' + str(cap) + '/'
-    mkdir(path)
-    downloadImages(path, link)
-    exit(0)
+parser = argparse.ArgumentParser(description='Anime Downloader')
+parser.add_argument('-u', '--url', type=str)
+parser.add_argument('-p', '--path', type=str)
+parser.add_argument('-t', '--threads', type=int, default=5)
+args = parser.parse_args()
+
+manga = Manga(args.url)
+path = Path(args.path)
+try:
+    os.mkdir(path)
+except FileExistsError:
+    pass
+
+with ThreadPoolExecutor(max_workers=args.threads) as executor:
+    for Capitulo in manga.getCapitulos():
+        Capitulo.addImagensUrls()
+        new_path = path / Capitulo.getNome()
+        os.mkdir(new_path)
+        for url in Capitulo.getImagensUrls():
+            executor.submit(downloadImagem, new_path, url)
